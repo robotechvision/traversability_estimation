@@ -84,6 +84,9 @@ class Rellis3DSequence(torch.utils.data.Dataset):
             self.ids_lid, self.ts_lid = self.get_ids(sensor='lidar')
             self.ids_rgb, self.ts_rgb = self.get_ids(sensor='rgb')
             self.ids_semseg, self.ts_semseg = self.get_ids(sensor='semseg')
+            if self.ts_lid is None:
+                self.ids_lid = self.ids_rgb
+                self.ts_lid = self.ts_rgb
             self.ids = self.ids_lid
         else:
             self.ids = None
@@ -91,7 +94,7 @@ class Rellis3DSequence(torch.utils.data.Dataset):
 
     def get_ids(self, sensor='lidar'):
         if sensor == 'lidar':
-            sensor_folder = 'os1_cloud_node_color_ply'
+            sensor_folder = 'os1_cloud_node_color_ply' # 'os1_cloud_node_kitti_bin'
         elif sensor == 'rgb':
             sensor_folder = 'pylon_camera_node'
         elif sensor == 'semseg':
@@ -100,9 +103,12 @@ class Rellis3DSequence(torch.utils.data.Dataset):
             raise ValueError('Unsupported sensor type (choose one of: lidar, or rgb, or semseg)')
         # id = frame0000i_sec_msec
         ids = [f[:-4] for f in np.sort(os.listdir(os.path.join(self.path, self.seq, sensor_folder)))]
-        ts = [float('%.3f' % (float(id.split('-')[1].split('_')[0]) + float(id.split('-')[1].split('_')[1]) / 1000.0))
-              for id in ids]
-        ts = np.sort(ts).tolist()
+        try:
+            ts = [float('%.3f' % (float(id.split('-')[1].split('_')[0]) + float(id.split('-')[1].split('_')[1]) / 1000.0))
+                  for id in ids]
+            ts = np.sort(ts).tolist()
+        except IndexError:
+            ts = None
         return ids, ts
 
     def local_cloud_path(self, id, filetype='bin'):
@@ -118,7 +124,7 @@ class Rellis3DSequence(torch.utils.data.Dataset):
     def cloud_poses_path(self):
         if self.poses_path:
             return self.poses_path
-        return os.path.join(self.path, 'calibration', self.seq, self.poses_file)
+        return os.path.join(self.path, self.seq, self.poses_file)
 
     def image_path(self, id):
         return os.path.join(self.path, self.seq, 'pylon_camera_node', '%s.jpg' % id)
@@ -127,10 +133,10 @@ class Rellis3DSequence(torch.utils.data.Dataset):
         return os.path.join(self.path, self.seq, 'pylon_camera_node_label_id', '%s.png' % id)
 
     def intrinsics_path(self):
-        return os.path.join(self.path, 'calibration', self.seq, 'camera_info.txt')
+        return os.path.join(self.path, self.seq, 'camera_info.txt')
 
     def extrinsics_path(self):
-        return os.path.join(self.path, 'calibration', self.seq, 'transforms.yaml')
+        return os.path.join(self.path, self.seq, 'transforms.yaml')
 
     def __len__(self):
         return len(self.ids)

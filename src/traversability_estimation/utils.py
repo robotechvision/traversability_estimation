@@ -4,7 +4,8 @@ from matplotlib import cm
 import numpy as np
 from numpy.lib.recfunctions import unstructured_to_structured
 from PIL import Image, ImageFile
-import rospy
+import rclpy
+from rclpy.logging import get_logger
 from timeit import default_timer as timer
 import torch
 import torchvision.models.segmentation
@@ -51,7 +52,7 @@ def timing(f):
         t0 = timer()
         ret = f(*args, **kwargs)
         t1 = timer()
-        rospy.logdebug('%s %.6f s' % (f.__name__, t1 - t0))
+        get_logger('timing').debug('%s %.6f s' % (f.__name__, t1 - t0))
         return ret
     return timing_wrapper
 

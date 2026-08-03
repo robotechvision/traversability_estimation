@@ -5,9 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import numba as nb
 import multiprocessing
-import torch_scatter
 
 
 class cylinder_fea(nn.Module):
@@ -77,7 +75,13 @@ class cylinder_fea(nn.Module):
 
         # process feature
         processed_cat_pt_fea = self.PPmodel(cat_pt_fea)
-        pooled_data = torch_scatter.scatter_max(processed_cat_pt_fea, unq_inv, dim=0)[0]
+        # Equivalent of torch_scatter.scatter_max(processed_cat_pt_fea, unq_inv, dim=0)[0],
+        # using native torch so that torch_scatter does not have to be installed.
+        pooled_data = torch.zeros((unq.shape[0], processed_cat_pt_fea.shape[1]),
+                                  dtype=processed_cat_pt_fea.dtype,
+                                  device=processed_cat_pt_fea.device)
+        pooled_data.scatter_reduce_(0, unq_inv.unsqueeze(-1).expand(-1, processed_cat_pt_fea.shape[1]),
+                                    processed_cat_pt_fea, reduce='amax', include_self=False)
 
         if self.fea_compre:
             processed_pooled_data = self.fea_compression(pooled_data)

@@ -6,20 +6,26 @@ from numpy.lib.recfunctions import structured_to_unstructured, unstructured_to_s
 from datasets.rellis_3d import Rellis3DSequence, seq_names
 from traversability_estimation.utils import filter_camera_points, normalize
 # ROS
-import rospy
+import rclpy
+from rclpy.clock import Clock
+from rclpy.node import Node
+from rclpy.time import Time
+from rclpy.duration import Duration
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
+
 from sensor_msgs.msg import CameraInfo, PointCloud2, CompressedImage
 from nav_msgs.msg import Path
 from geometry_msgs.msg import Transform, PoseStamped, TransformStamped
-from ros_numpy import msgify
-from tf.transformations import quaternion_from_matrix
+from ros2_numpy import msgify
+from scipy.spatial.transform import Rotation as R
 import tf2_ros
 from tf2_msgs.msg import TFMessage
 import cv2
+import os
 
 
-def publish_tf_pose(pose, child_frame_id):
+def publish_tf_pose(br, pose, child_frame_id):
     assert isinstance(pose, PoseStamped)
-    br = tf2_ros.TransformBroadcaster()
     t = TransformStamped()
     t.header.stamp = pose.header.stamp
     t.header.frame_id = pose.header.frame_id
@@ -38,11 +44,11 @@ def matrix_to_pose_msg(T, frame_id):
     assert T.shape == (4, 4)
     pose = PoseStamped()
     pose.header.frame_id = frame_id
-    pose.header.stamp = rospy.Time.now()
+    pose.header.stamp = Clock().now().to_msg()
     pose.pose.position.x = T[0, 3]
     pose.pose.position.y = T[1, 3]
     pose.pose.position.z = T[2, 3]
-    q = quaternion_from_matrix(T)
+    q = R.from_matrix(T[:3, :3]).as_quat()
     pose.pose.orientation.x = q[0]
     pose.pose.orientation.y = q[1]
     pose.pose.orientation.z = q[2]
@@ -50,72 +56,77 @@ def matrix_to_pose_msg(T, frame_id):
     return pose
 
 
-class RobotData:
-    def __init__(self, sequence='00000'):
+class RobotData(Node):
+    def __init__(self):
+        super().__init__('robot_data')
+        sequence = self.declare_parameter('data_sequence', seq_names[0]).get_parameter_value().string_value
         self.current_pose = None
         self.rgb = None
         self.semseg = None
         self.lidar_cloud = None
         self.global_cloud = None
-        self.origin_frame = rospy.get_param('~origin_frame', 'odom')
-        self.lidar_frame = rospy.get_param('~lidar_frame', 'ouster_lidar')
-        self.camera_frame = rospy.get_param('~camera_frame', 'pylon_camera')
-        self.publish_global_map = rospy.get_param('~publish_global_map', False)
-        self.lidar_channels_H = rospy.get_param('~lidar_channels', 64)
-        self.lidar_beams_W = rospy.get_param('~lidar_beams', 2048)
+        self.origin_frame = self.declare_parameter('origin_frame', 'odom').get_parameter_value().string_value
+        self.lidar_frame = self.declare_parameter('lidar_frame', 'ouster_lidar').get_parameter_value().string_value
+        self.camera_frame = self.declare_parameter('camera_frame', 'pylon_camera').get_parameter_value().string_value
+        self.publish_global_map = self.declare_parameter('publish_global_map', False).get_parameter_value().bool_value
+        self.lidar_channels_H = self.declare_parameter('lidar_channels', 64).get_parameter_value().integer_value
+        self.lidar_beams_W = self.declare_parameter('lidar_beams', 2048).get_parameter_value().integer_value
         self.path = Path()
         self.path.header.frame_id = self.origin_frame
-        self.ds = Rellis3DSequence(seq=sequence)
-        self.delay_start = rospy.get_param('~delay_start', 1.0)
-        self.period = rospy.get_param('~period', 1.0)
+        self.ds = Rellis3DSequence(seq=sequence, path=os.path.join('/usr', 'local', 'robotechvision', 'datasets', 'rellis3d'))
+        self.delay_start = self.declare_parameter('delay_start', 1.0).get_parameter_value().double_value
+        self.period = self.declare_parameter('period', 1.0).get_parameter_value().double_value
         self.index = 0
-        self.pose_step = rospy.get_param('~pose_step', 5)
+        self.pose_step = self.declare_parameter('pose_step', 5).get_parameter_value().integer_value
         self.poses = list(self.ds.poses)
         self.clouds = list()
 
-        self.path_pub = rospy.Publisher('~path', Path, queue_size=2)
-        self.lidar_pc_pub = rospy.Publisher('~lidar_cloud', PointCloud2, queue_size=1)
-        self.cam_pc_pub = rospy.Publisher('~camera_cloud', PointCloud2, queue_size=1)
-        self.caminfo_pub = rospy.Publisher('~camera_info', CameraInfo, queue_size=1)
-        self.tf_pub = rospy.Publisher('/tf', TFMessage, queue_size=2, latch=True)
-        self.rgb_pub = rospy.Publisher('~rgb/compressed', CompressedImage, queue_size=1)
-        self.semseg_pub = rospy.Publisher('~semantic_segmentation/compressed', CompressedImage, queue_size=1)
-        self.time_stamp = rospy.Time.now()
+        self.path_pub = self.create_publisher(Path, 'path', 2)
+        self.lidar_pc_pub = self.create_publisher(PointCloud2, 'lidar_cloud', 1)
+        self.cam_pc_pub = self.create_publisher(PointCloud2, 'camera_cloud', 1)
+        self.caminfo_pub = self.create_publisher(CameraInfo, 'camera_info', 1)
+        self.tf_pub = self.create_publisher(TFMessage, '/tf_static', QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, reliability=QoSReliabilityPolicy.RELIABLE))
+        self.rgb_pub = self.create_publisher(CompressedImage, 'rgb/compressed', 1)
+        self.semseg_pub = self.create_publisher(CompressedImage, 'semantic_segmentation/compressed', 1)
+        self.time_stamp = self.get_clock().now()
 
         intrins_msg, tf_lidar2cam = self.get_camera_calib_msgs()
         self.calibration_msgs = {'intrinsics': intrins_msg, 'tf_lid2cam': tf_lidar2cam}
 
-        self.timer = rospy.Timer(rospy.Duration(self.delay_start), self.start_timer, oneshot=True)
+        self.br = tf2_ros.TransformBroadcaster(self)
+        self.timer = self.create_timer(self.delay_start, self.start_timer)
+        self.extrinsics_timer = self.create_timer(0.01, self.publish_extrinsics)
         self.publish_extrinsics()
+        self.get_logger().info("Initialized robot data node.")
 
-    def publish_extrinsics(self, rate=100):
-        rate = rospy.Rate(rate)
-        while not rospy.is_shutdown():
-            if not self.is_valid():
-                rospy.loginfo('No more positions.')
-                rospy.signal_shutdown('No more positions.')
-            self.calibration_msgs['tf_lid2cam'].header.stamp = rospy.Time.now()
-            self.tf_pub.publish(TFMessage([self.calibration_msgs['tf_lid2cam']]))
-            rate.sleep()
+    def publish_extrinsics(self):
+        if not self.is_valid():
+            self.get_logger().info('No more positions.')
+            rclpy.shutdown()
+        self.calibration_msgs['tf_lid2cam'].header.stamp = self.get_clock().now().to_msg()
+        msg = TFMessage()
+        msg.transforms.append(self.calibration_msgs['tf_lid2cam'])
+        self.tf_pub.publish(msg)
 
-    def start_timer(self, evt):
-        self.timer = rospy.Timer(rospy.Duration(self.period), self.run)
-        rospy.loginfo('Publishing robot data.')
+    def start_timer(self):
+        self.timer.cancel()
+        self.timer = self.create_timer(self.period, self.run)
+        self.get_logger().info('Publishing robot data.')
 
     def is_valid(self):
-        return not rospy.is_shutdown() and self.index < len(self.ds)
+        return rclpy.ok() and self.index < len(self.ds)
 
     def move(self):
         if self.index < len(self.ds) - self.pose_step:
             self.index += self.pose_step
         else:
             self.index = len(self.ds) - 1
-        rospy.logdebug('Moved to next data sample')
+        self.get_logger().debug('Moved to next data sample')
 
     def step(self):
         if not self.is_valid():
-            rospy.loginfo('No more positions.')
-            rospy.signal_shutdown('No more positions.')
+            self.get_logger().info('No more positions.')
+            rclpy.shutdown()
 
         cloud, cloud_label, pose, rgb, semseg = self.ds[self.index]
 
@@ -128,7 +139,7 @@ class RobotData:
             cloud_map = cloud_lid.copy()
             cloud_map[..., :3] = np.matmul(cloud_lid[..., :3], pose[:3, :3].T) + pose[:3, 3:].T
             self.clouds.append(cloud_map)
-            rospy.logdebug('Point cloud shape:', cloud_map.shape)
+            self.get_logger().debug('Point cloud shape:', cloud_map.shape)
             global_cloud = np.asarray(np.concatenate(self.clouds), dtype=np.float32)
             global_cloud = unstructured_to_structured(global_cloud, names=cloud.dtype.names)
             self.global_cloud = global_cloud
@@ -137,13 +148,13 @@ class RobotData:
         self.semseg = semseg
         self.lidar_cloud = cloud_lid  # .reshape([self.lidar_channels_H, self.lidar_beams_W, -1])
 
-    def run(self, evt):
-        t0 = rospy.Time.now()
+    def run(self):
+        t0 = self.get_clock().now()
         self.step()
-        rospy.logdebug('Data reading took %.3f sec' % (rospy.Time.now() - t0).to_sec())
+        self.get_logger().debug('Data reading took %.3f sec' % ((self.get_clock().now() - t0).nanoseconds/1e9))
 
         # get messages
-        stamp = rospy.Time.now()
+        stamp = self.get_clock().now()
         self.time_stamp = stamp
         path_msg = self.get_path_msg(time_stamp=stamp)
         lidar_pc_msg = self.to_cloud_msg(self.lidar_cloud, time_stamp=stamp, frame=self.lidar_frame)
@@ -153,11 +164,11 @@ class RobotData:
             global_pc_msg = self.to_cloud_msg(self.global_cloud, time_stamp=stamp, frame=self.origin_frame)
             cam_pc_msg = self.get_camera_cloud_msg(cloud_lid=self.lidar_cloud, time_stamp=stamp)
 
-        t1 = rospy.Time.now()
-        rospy.logdebug('Messages preparation took %.3f sec' % (t1 - stamp).to_sec())
+        t1 = self.get_clock().now()
+        self.get_logger().debug('Messages preparation took %.3f sec' % ((t1 - stamp).nanoseconds/1e9))
 
         # publish messages
-        self.calibration_msgs['intrinsics'].header.stamp = self.time_stamp
+        self.calibration_msgs['intrinsics'].header.stamp = self.time_stamp.to_msg()
         self.caminfo_pub.publish(self.calibration_msgs['intrinsics'])
         self.path_pub.publish(path_msg)
         self.lidar_pc_pub.publish(lidar_pc_msg)
@@ -167,7 +178,7 @@ class RobotData:
             self.map_pc_pub.publish(global_pc_msg)
             self.cam_pc_pub.publish(cam_pc_msg)
 
-        rospy.logdebug('Messages publishing took %.3f sec' % (rospy.Time.now() - t1).to_sec())
+        self.get_logger().debug('Messages publishing took %.3f sec' % ((self.get_clock().now() - t1).nanoseconds/1e9))
 
         # move to next index
         self.move()
@@ -181,7 +192,7 @@ class RobotData:
         cloud_cam = unstructured_to_structured(cloud_cam, names=['x', 'y', 'z'])
         pc_msg = msgify(PointCloud2, cloud_cam)
         pc_msg.header.frame_id = self.lidar_frame
-        pc_msg.header.stamp = time_stamp
+        pc_msg.header.stamp = time_stamp.to_msg()
         return pc_msg
 
     def get_camera_calib_msgs(self, distortion_model="plumb_bob"):
@@ -194,18 +205,18 @@ class RobotData:
         intrins_msg.header.frame_id = self.camera_frame
         intrins_msg.width = self.ds.calibration['img_width']
         intrins_msg.height = self.ds.calibration['img_height']
-        intrins_msg.K = self.ds.calibration['K'].flatten().tolist()
-        intrins_msg.D = self.ds.calibration['dist_coeff'].tolist()
-        intrins_msg.P = self.ds.calibration['P'].flatten().tolist()
+        intrins_msg.k = self.ds.calibration['K'].flatten().tolist()
+        intrins_msg.d = self.ds.calibration['dist_coeff'].tolist()
+        intrins_msg.p = self.ds.calibration['P'].flatten().tolist()
         intrins_msg.distortion_model = distortion_model
         return intrins_msg, tf_lid2cam
 
     def get_path_msg(self, time_stamp):
         assert self.current_pose.shape == (4, 4)
         pose_msg = matrix_to_pose_msg(self.current_pose, self.origin_frame)
-        publish_tf_pose(pose_msg, child_frame_id=self.lidar_frame)
+        publish_tf_pose(self.br, pose_msg, child_frame_id=self.lidar_frame)
         self.path.poses.append(pose_msg)
-        self.path.header.stamp = time_stamp
+        self.path.header.stamp = time_stamp.to_msg()
         return self.path
 
     def to_cloud_msg(self, cloud, time_stamp, frame):
@@ -220,25 +231,29 @@ class RobotData:
             else:
                 cloud = unstructured_to_structured(cloud[..., :3], names=['x', 'y', 'z'])
         pc_msg = msgify(PointCloud2, cloud)
-        pc_msg.header.stamp = time_stamp
+        pc_msg.header.stamp = time_stamp.to_msg()
         pc_msg.header.frame_id = frame
         return pc_msg
 
     def get_image_msg(self, img, time_stamp):
         img = np.uint8(255 * normalize(img))[..., (2, 1, 0)]
         img_msg = CompressedImage()
-        img_msg.header.stamp = time_stamp
+        img_msg.header.stamp = time_stamp.to_msg()
         img_msg.header.frame_id = self.camera_frame
         img_msg.format = "jpeg"
         img_msg.data = np.array(cv2.imencode('.jpg', img)[1]).tobytes()
         return img_msg
 
 
-def main():
-    rospy.init_node('robot_data_rellis3d', log_level=rospy.INFO)
-    subseq = rospy.get_param('~data_sequence', seq_names[0])
-    proc = RobotData(subseq)
-    rospy.spin()
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = RobotData()
+
+    rclpy.spin(node)
+
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ def sigmoid(x):
 def msgify_cloud(cloud, frame, stamp, names=None):
     if not names:
         # names = cloud.dtype.names
-        names = ['x', 'y', 'z', 'cost']
+        names = ['x', 'y', 'z', 'intensity']
     cloud = unstructured_to_structured(cloud, names=names)
     msg = msgify(PointCloud2, cloud)
     msg.header.frame_id = frame
@@ -44,7 +44,7 @@ class CloudFusion:
         # any point that is farer than this threshold from points in existing cloud is considered as new
         self.dist_th = rospy.get_param('~pts_proximity_th', 0.2)
         self.max_age = rospy.get_param('~max_age', 1.0)
-        self.input_names = ['x', 'y', 'z', rospy.get_param('~label_to_fuse', 'cost')]
+        self.input_names = ['x', 'y', 'z', rospy.get_param('~label_to_fuse', 'intensity')]
         self.max_n_pts = rospy.get_param('~max_n_pts', None)
         self.fusion_mode = rospy.get_param('~fusion_mode', 'min')
         assert self.fusion_mode in ['merge', 'min', 'max', 'mean']

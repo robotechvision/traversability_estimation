@@ -32,7 +32,7 @@ class TravFusion:
         self.lock = Lock()
         self.geom_msg = None
         self.sem_msg = None
-        self.data_fields = ['x', 'y', 'z', 'cost']
+        self.data_fields = ['x', 'y', 'z', 'intensity']
 
         self.tf_buffer = Buffer(rospy.Duration.from_sec(2 * self.max_time_diff))
         self.tf_sub = TransformListener(self.tf_buffer)
@@ -88,14 +88,14 @@ class TravFusion:
         # Match geometric to semantic, so that every geometric point
         #  with appropriate costs is updated.
         fused_cloud = geom_cloud.copy()
-        fused_cost = fused_cloud['cost']
+        fused_cost = fused_cloud['intensity']
         tree = scipy.spatial.cKDTree(sem_pts)
         dists, idxs = tree.query(geom_pts, k=1)
         mask = dists <= self.dist_th
         mask = np.logical_and(mask, geom_cost >= self.flat_cost_th)
         mask = np.logical_and(mask, geom_cost <= self.obstacle_cost_th)
         fused_cost[mask] = sem_cost[idxs[mask]] + self.semantic_cost_offset
-        fused_cloud['cost'] = fused_cost
+        fused_cloud['intensity'] = fused_cost
 
         # plt.cla()
         # plt.plot(geom_cost[::10], label='Geom cost')
