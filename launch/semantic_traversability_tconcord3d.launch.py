@@ -62,6 +62,7 @@ def generate_launch_description():
         DeclareLaunchArgument(name='output', default_value='cloud_segmentation_tconcord3d/points', description='Output traversability point cloud topic.'),
         DeclareLaunchArgument(name='max_age', default_value='0.5'),
         DeclareLaunchArgument(name='weights', default_value='student_kitti_traversablity_f0_0_time_ema.pt'),
+        DeclareLaunchArgument(name='weights_dir', default_value='/usr/local/robotechvision/deeplab/t-concord3d'),
         # Set to false when running against live data instead of a bag replaying /clock.
         DeclareLaunchArgument(name='use_sim_time', default_value='false',
                               description='Use /clock instead of the wall clock.'),
@@ -76,6 +77,7 @@ def generate_launch_description():
                 'device': LaunchConfiguration('device'),
                 'max_age': LaunchConfiguration('max_age'),
                 'weights': LaunchConfiguration('weights'),
+                'weights_dir': LaunchConfiguration('weights_dir'),
                 'cloud_in': LaunchConfiguration('input'),
                 'cloud_out': LaunchConfiguration('output'),
             }],

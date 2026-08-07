@@ -43,7 +43,8 @@ class CloudSegmentor(Node):
         cloud_topic = self.declare_parameter('cloud_in', 'cloud_in').get_parameter_value().string_value
 
         self.model_weights = self.declare_parameter('weights', 'student_kitti_traversablity_f0_0_time_ema.pt').get_parameter_value().string_value
-        self.model_path = os.path.join(pkg_path, "config/weights/", "t-concord3d/%s" % self.model_weights)
+        self.weights_dir = self.declare_parameter('weights_dir', os.path.join(pkg_path, "config/weights/", "t-concord3d")).get_parameter_value().string_value
+        self.model_path = os.path.join(self.weights_dir, self.model_weights)
         # assert os.path.exists(self.model_path)
         model_config_path = os.path.join(pkg_path, 'src/tconcord3d/config/semantickitti/'
                                          'semantickitti_S0_0_T11_33_ssl_s20_p80.yaml')
