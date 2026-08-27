@@ -128,12 +128,12 @@ class CloudSegmentor(Node):
             cylindr_features = torch.as_tensor(cylindr_features, dtype=torch.float32).to(self.device)
             grid_ind_tensor = torch.as_tensor(grid_ind, dtype=torch.float32).to(self.device)
             with torch.no_grad():
-                self.get_logger().info(f'Input shapes: {cylindr_features.shape}, {xyz.shape}')
+                # self.get_logger().info(f'Input shapes: {cylindr_features.shape}, {xyz.shape}')
 
                 t0 = self.get_clock().now().nanoseconds/1e9
                 predict_labels_raw = self.model([cylindr_features], [grid_ind_tensor], batch_size=1) 
-                self.get_logger().info(f'Inference took: {self.get_clock().now().nanoseconds/1e9 - t0} [sec]')
-                self.get_logger().debug(f'Output shape: {predict_labels_raw.shape}')
+                # self.get_logger().info(f'Inference took: {self.get_clock().now().nanoseconds/1e9 - t0} [sec]')
+                # self.get_logger().debug(f'Output shape: {predict_labels_raw.shape}')
 
                 # predict_labels = torch.argmax(predict_labels_raw, dim=1)
 
